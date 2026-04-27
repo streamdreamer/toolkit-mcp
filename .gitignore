@@ -1,0 +1,9 @@
+node_modules/
+package-lock.json
+*.log
+.env
+.env.local
+.DS_Store
+
+# Session-private — contains CF Access Client ID and internal context
+SESSION_BRIEF.md

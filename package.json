@@ -1,0 +1,29 @@
+{
+  "name": "toolkit-mcp",
+  "version": "0.1.1",
+  "description": "MCP server bridge to Serve Electric toolkit-api (runs on Windows host outside Claude Desktop's Cowork sandbox)",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "toolkit-mcp": "./index.js"
+  },
+  "files": [
+    "index.js"
+  ],
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.8"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/streamdreamer/toolkit-mcp.git"
+  },
+  "author": "Serve Electric",
+  "license": "MIT"
+}
