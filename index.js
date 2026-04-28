@@ -105,6 +105,8 @@ CACHED (fast, includes only CLOSED months — the current unclosed month is NOT 
 LIVE Intacct queries (slower, but capture activity in the unclosed current month):
   - ap_open   → open AP bills for a vendor (substring match). ~20–60s.
   - ap_aging  → full AP aging by bucket and vendor. ~45–90s.
+  - ar_open   → open AR invoices for a customer (substring match). ~20–60s.
+  - ar_aging  → full AR aging by bucket and customer. ~45–90s.
 
 For routine analytical questions (P&L, GM%, branch rollups, 12MMA), prefer dashboard_get over reading local _shared/source-data Excel files — the cache IS the canonical view.
 
@@ -117,7 +119,7 @@ The current calendar month is UNCLOSED until month-end + close. The dashboard ca
 
   "Your request would include the current unclosed month, which has interim numbers that will still move and aren't reflected in the cached dashboard. Two options:
    (a) Use the most recent CLOSED month only — [name the month] — recommended for data integrity.
-   (b) Combine cached closed-month data with live current-month figures — possible for AP via ap_open/ap_aging, but P&L / job costing have no live source and can't be reliably computed mid-close.
+   (b) Combine cached closed-month data with live current-month figures — possible for AP via ap_open/ap_aging and AR via ar_open/ar_aging, but P&L / job costing have no live source and can't be reliably computed mid-close.
    Which would you like?"
 
 Default to (a). Do not silently produce a number that mixes closed-cache data with current-month estimates — that's a data-integrity failure.
@@ -130,7 +132,7 @@ cache_info.fetched_at reflects the last raw Intacct API pull, NOT the last dashb
 Translation: a "stale-looking" fetched_at — even weeks old — is EXPECTED. Closed-period data is still right. If a user asks "is this fresh?" or "why does it say it was fetched [date]?", explain this calmly. Don't alarm them. Don't recommend cache_refresh_start as a fix — under SKIP_POST_CLOSE_REFRESH=1 it won't move fetched_at either.`;
 
 const server = new McpServer(
-  { name: "toolkit-mcp", version: "0.1.1" },
+  { name: "toolkit-mcp", version: "0.2.0" },
   { instructions: SERVER_INSTRUCTIONS }
 );
 
@@ -207,6 +209,25 @@ server.tool(
     as_of: z.string().optional().describe("YYYY-MM-DD (defaults to today)"),
   },
   async ({ as_of }) => apiRequest("GET", "/api/intacct/ap/aging", { as_of })
+);
+
+server.tool(
+  "ar_open",
+  "LIVE Intacct query — open AR invoices for a customer (substring LIKE match on CUSTOMERNAME). Default as_of=today (current snapshot, INCLUDING the unclosed current month — which is why this is live, not cached). Returns invoice list with open_amount, age_days_past_due, due date, sorted by open amount desc. Customer='Gray' matches 'Gray Construction' and variants. ~20–60s.",
+  {
+    customer: z.string().describe("Customer name substring, e.g. 'Gray'"),
+    as_of: z.string().optional().describe("YYYY-MM-DD (defaults to today — usually what you want)"),
+  },
+  async ({ customer, as_of }) => apiRequest("GET", "/api/intacct/ar/open", { customer, as_of })
+);
+
+server.tool(
+  "ar_aging",
+  "LIVE Intacct query — full AR aging bucketed (current / 1-30 / 31-60 / 61-90 / 91+) with per-customer rollup and grand totals. Default as_of=today. ~45–90s — pulls the entire AR ledger. Use for total AR exposure, top-customer exposure, or aged-AR analysis.",
+  {
+    as_of: z.string().optional().describe("YYYY-MM-DD (defaults to today)"),
+  },
+  async ({ as_of }) => apiRequest("GET", "/api/intacct/ar/aging", { as_of })
 );
 
 const transport = new StdioServerTransport();

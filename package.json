@@ -1,6 +1,6 @@
 {
   "name": "toolkit-mcp",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "MCP server bridge to Serve Electric toolkit-api (runs on Windows host outside Claude Desktop's Cowork sandbox)",
   "type": "module",
   "main": "index.js",
