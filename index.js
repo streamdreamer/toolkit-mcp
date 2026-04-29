@@ -117,6 +117,9 @@ CASHFLOW ANALYTICS (computed historical metrics — slower, but mirror Dave's ex
   Use lookback_months=15 by default (matches the production model). Customers/vendors with <3 paid samples
   are excluded by default to reduce noise.
 
+GL DRILL-DOWN (transaction-level):
+  - gl_detail → transaction-level GLDETAIL rows for specified accounts in a date range. REQUIRED: accounts (list of account numbers), start, end (YYYY-MM-DD). OPTIONAL: type=both|debits|credits, vendor/customer/project/location for sub-drill. Caps at 50K records — narrow query if response shows truncated=true. Use for credit-card payment tracking, special-account analysis, ad-hoc GL drill-down. ~30–90s depending on result size.
+
 For routine analytical questions (P&L, GM%, branch rollups, 12MMA), prefer dashboard_get over reading local _shared/source-data Excel files — the cache IS the canonical view.
 
 Auth (CF Access service token) is injected automatically from env vars; you do not need to handle it.
@@ -141,7 +144,7 @@ cache_info.fetched_at reflects the last raw Intacct API pull, NOT the last dashb
 Translation: a "stale-looking" fetched_at — even weeks old — is EXPECTED. Closed-period data is still right. If a user asks "is this fresh?" or "why does it say it was fetched [date]?", explain this calmly. Don't alarm them. Don't recommend cache_refresh_start as a fix — under SKIP_POST_CLOSE_REFRESH=1 it won't move fetched_at either.`;
 
 const server = new McpServer(
-  { name: "toolkit-mcp", version: "0.3.0" },
+  { name: "toolkit-mcp", version: "0.4.0" },
   { instructions: SERVER_INSTRUCTIONS }
 );
 
@@ -222,7 +225,7 @@ server.tool(
 
 server.tool(
   "ar_open",
-  "LIVE Intacct query — open AR invoices for a customer (substring LIKE match on CUSTOMERNAME). Default as_of=today (current snapshot, INCLUDING the unclosed current month — which is why this is live, not cached). Returns invoice list with open_amount, age_days_past_due, due date, sorted by open amount desc. Customer='Gray' matches 'Gray Construction' and variants. ~20–60s.",
+  "LIVE Intacct query — open AR invoices for a customer (substring LIKE match on CUSTOMERNAME). Default as_of=today (current snapshot, INCLUDING the unclosed current month — which is why this is live, not cached). Returns invoice list with open_amount, retainage_held, open_billing (= open_amount minus retainage), age_days_past_due, due date, sorted by open amount desc. Top-level also exposes total_open, total_retainage_held, and total_billing_open — use these to answer 'what's our retainage exposure on customer X' in one call. retainage_held comes straight from Intacct's TOTALRETAINED field; open_billing is the portion expected via normal AR collection. Customer='Gray' matches 'Gray Construction' and variants. ~20–60s.",
   {
     customer: z.string().describe("Customer name substring, e.g. 'Gray'"),
     as_of: z.string().optional().describe("YYYY-MM-DD (defaults to today — usually what you want)"),
@@ -232,7 +235,7 @@ server.tool(
 
 server.tool(
   "ar_aging",
-  "LIVE Intacct query — full AR aging bucketed (current / 1-30 / 31-60 / 61-90 / 91+) with per-customer rollup and grand totals. Default as_of=today. ~45–90s — pulls the entire AR ledger. Use for total AR exposure, top-customer exposure, or aged-AR analysis.",
+  "LIVE Intacct query — full AR aging bucketed (current / 1-30 / 31-60 / 61-90 / 91+) with a SEPARATE retainage column for contractually-held amounts that are NOT aged like delinquent AR. Per-customer rollup and grand totals. Each customer row and bucket_totals expose 6 keys: current, 1_30, 31_60, 61_90, 91_plus, retainage. Top-level exposes total_open, total_retainage_held, total_billing_open. Default as_of=today. ~45–90s — pulls the entire AR ledger. Use for total AR exposure, top-customer exposure, aged-AR analysis, or retainage-vs-collectible breakdown.",
   {
     as_of: z.string().optional().describe("YYYY-MM-DD (defaults to today)"),
   },
@@ -279,6 +282,29 @@ server.tool(
     min_samples: z.number().optional().describe("Minimum paid invoices per customer to include (default 3)"),
   },
   async ({ lookback_months, min_samples }) => apiRequest("GET", "/api/cashflow/customer-dso", { lookback_months, min_samples })
+);
+
+server.tool(
+  "gl_detail",
+  "Transaction-level GLDETAIL rows for specified accounts in a date range. REQUIRED: accounts (list of account numbers like ['21010','21011']), start, end (YYYY-MM-DD). OPTIONAL: type=both|debits|credits (default both), vendor / customer / project / location for sub-drill. Returns each transaction with date, debit/credit amount, description, document, vendor/customer/project/location context. Caps at 50K records — if response shows truncated=true, narrow your query (smaller date range or fewer accounts). Use for credit-card payment tracking (e.g., accounts 21010-21203), special-account analysis, drilling into a specific vendor's GL activity, or ad-hoc account-level investigation. ~30–90s.",
+  {
+    accounts: z.array(z.string()).describe("List of account numbers to query (e.g., ['21010','21011','21012'])"),
+    start: z.string().describe("Start date YYYY-MM-DD (required)"),
+    end: z.string().describe("End date YYYY-MM-DD (required)"),
+    type: z.enum(["both", "debits", "credits"]).optional().describe("Filter to debit-only, credit-only, or both (default both)"),
+    vendor: z.string().optional().describe("VENDORID exact match (e.g., 'V0743')"),
+    customer: z.string().optional().describe("CUSTOMERID exact match"),
+    project: z.string().optional().describe("PROJECTID exact match"),
+    location: z.string().optional().describe("LOCATIONID exact match (e.g., '200' for Sterling Heights)"),
+  },
+  async ({ accounts, start, end, type, vendor, customer, project, location }) => apiRequest(
+    "GET",
+    "/api/intacct/gl/detail",
+    {
+      accounts: Array.isArray(accounts) ? accounts.join(",") : accounts,
+      start, end, type, vendor, customer, project, location,
+    },
+  )
 );
 
 const transport = new StdioServerTransport();
