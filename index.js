@@ -103,10 +103,19 @@ CACHED (fast, includes only CLOSED months — the current unclosed month is NOT 
   - cache_refresh_start + cache_refresh_status → force a fresh Intacct pull. Rarely needed — the toolkit auto-refreshes nightly at 02:00 NAS local time.
 
 LIVE Intacct queries (slower, but capture activity in the unclosed current month):
-  - ap_open   → open AP bills for a vendor (substring match). ~20–60s.
-  - ap_aging  → full AP aging by bucket and vendor. ~45–90s.
-  - ar_open   → open AR invoices for a customer (substring match). ~20–60s.
-  - ar_aging  → full AR aging by bucket and customer. ~45–90s.
+  - ap_open      → open AP bills for a vendor (substring match). ~20–60s.
+  - ap_aging     → full AP aging by bucket and vendor. ~45–90s.
+  - ar_open      → open AR invoices for a customer (substring match). ~20–60s.
+  - ar_aging     → full AR aging by bucket and customer. ~45–90s.
+  - ap_payments  → vendor payments PAID in a date range (APPYMT). ~20–60s.
+  - ar_payments  → customer receipts RECEIVED in a date range (ARPYMTHEADER). ~20–60s.
+
+CASHFLOW ANALYTICS (computed historical metrics — slower, but mirror Dave's existing Excel model):
+  - vendor_dtp    → historical days-to-pay per vendor (avg/median over last N months of paid bills). ~60–120s.
+  - customer_dso  → customer-specific days-sales-outstanding (avg/median over last N months of paid invoices). ~60–120s.
+  These mirror the "AP Detail" and "AR Collection Detail" tabs in Serve Electric Cash Flow Forecast 2026.xlsx.
+  Use lookback_months=15 by default (matches the production model). Customers/vendors with <3 paid samples
+  are excluded by default to reduce noise.
 
 For routine analytical questions (P&L, GM%, branch rollups, 12MMA), prefer dashboard_get over reading local _shared/source-data Excel files — the cache IS the canonical view.
 
@@ -132,7 +141,7 @@ cache_info.fetched_at reflects the last raw Intacct API pull, NOT the last dashb
 Translation: a "stale-looking" fetched_at — even weeks old — is EXPECTED. Closed-period data is still right. If a user asks "is this fresh?" or "why does it say it was fetched [date]?", explain this calmly. Don't alarm them. Don't recommend cache_refresh_start as a fix — under SKIP_POST_CLOSE_REFRESH=1 it won't move fetched_at either.`;
 
 const server = new McpServer(
-  { name: "toolkit-mcp", version: "0.2.0" },
+  { name: "toolkit-mcp", version: "0.3.0" },
   { instructions: SERVER_INSTRUCTIONS }
 );
 
@@ -228,6 +237,48 @@ server.tool(
     as_of: z.string().optional().describe("YYYY-MM-DD (defaults to today)"),
   },
   async ({ as_of }) => apiRequest("GET", "/api/intacct/ar/aging", { as_of })
+);
+
+server.tool(
+  "ap_payments",
+  "LIVE Intacct query — vendor payments (APPYMT) PAID in a date range. Returns paid amounts with date, payment method, vendor. Vendor filter optional (substring LIKE match). Date range required (YYYY-MM-DD). Use for cash-out analysis, vendor payment history, or weekly cash-flow actuals. ~20–60s.",
+  {
+    start: z.string().describe("Start date YYYY-MM-DD (required)"),
+    end: z.string().describe("End date YYYY-MM-DD (required)"),
+    vendor: z.string().optional().describe("Vendor name substring (omit for all vendors in range)"),
+  },
+  async ({ start, end, vendor }) => apiRequest("GET", "/api/intacct/ap/payments", { start, end, vendor })
+);
+
+server.tool(
+  "ar_payments",
+  "LIVE Intacct query — customer receipts (ARPYMTHEADER) RECEIVED in a date range. Returns received amounts with date, customer, payment method. Customer filter optional. Date range required (YYYY-MM-DD). Use for cash-in analysis, customer collection history, or weekly cash-flow actuals. ~20–60s.",
+  {
+    start: z.string().describe("Start date YYYY-MM-DD (required)"),
+    end: z.string().describe("End date YYYY-MM-DD (required)"),
+    customer: z.string().optional().describe("Customer name substring (omit for all customers in range)"),
+  },
+  async ({ start, end, customer }) => apiRequest("GET", "/api/intacct/ar/payments", { start, end, customer })
+);
+
+server.tool(
+  "vendor_dtp",
+  "Historical days-to-pay per vendor. Pulls APBILL records paid in the last N months and computes avg/median/min/max days from posted to paid, grouped by vendor. Mirrors the 'Hist DTP (days)' column in Dave's AP Detail tab of Serve Electric Cash Flow Forecast 2026.xlsx. Default lookback=15 months (matches existing model). Vendors with <3 paid bills excluded by default. Use for cash-out timing forecasts, vendor payment behavior analysis. ~60–120s (full AP query).",
+  {
+    lookback_months: z.number().optional().describe("Months of payment history to analyze (default 15)"),
+    min_samples: z.number().optional().describe("Minimum paid bills per vendor to include (default 3)"),
+  },
+  async ({ lookback_months, min_samples }) => apiRequest("GET", "/api/cashflow/vendor-dtp", { lookback_months, min_samples })
+);
+
+server.tool(
+  "customer_dso",
+  "Customer-specific days-sales-outstanding (DSO). Pulls ARINVOICE records paid in the last N months and computes avg/median/min/max days from posted to paid, grouped by customer. Mirrors the 'Customer DSO' calculation in Dave's AR Collection Detail tab of Serve Electric Cash Flow Forecast 2026.xlsx. Default lookback=15 months (matches existing model). Customers with <3 paid invoices excluded by default. Use for AR collection forecasting, customer payment behavior, expected pay date per invoice (= invoice_date + customer_DSO). ~60–120s.",
+  {
+    lookback_months: z.number().optional().describe("Months of payment history to analyze (default 15)"),
+    min_samples: z.number().optional().describe("Minimum paid invoices per customer to include (default 3)"),
+  },
+  async ({ lookback_months, min_samples }) => apiRequest("GET", "/api/cashflow/customer-dso", { lookback_months, min_samples })
 );
 
 const transport = new StdioServerTransport();
