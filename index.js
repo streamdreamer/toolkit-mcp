@@ -120,6 +120,9 @@ CASHFLOW ANALYTICS (computed historical metrics — slower, but mirror Dave's ex
 GL DRILL-DOWN (transaction-level):
   - gl_detail → transaction-level GLDETAIL rows for specified accounts in a date range. REQUIRED: accounts (list of account numbers), start, end (YYYY-MM-DD). OPTIONAL: type=both|debits|credits, vendor/customer/project/location for sub-drill. Caps at 50K records — narrow query if response shows truncated=true. Use for credit-card payment tracking, special-account analysis, ad-hoc GL drill-down. ~30–90s depending on result size.
 
+AR RETAINAGE (separate dimension from regular AR aging):
+  - ar_retainage → open retainage outstanding by project and customer (GC). Mirrors the "Retainage Release Schedule" tab in Serve Electric Cash Flow Forecast 2026.xlsx. Use this for cash-flow forecasting because retainage has different release timing than regular AR (tied to project completion / GC release schedule, not invoice age). When asked about "open AR" or "AR aging", consider whether the user wants retainage included or shown separately — for cash-flow purposes they usually want it separate. ~45–90s.
+
 For routine analytical questions (P&L, GM%, branch rollups, 12MMA), prefer dashboard_get over reading local _shared/source-data Excel files — the cache IS the canonical view.
 
 Auth (CF Access service token) is injected automatically from env vars; you do not need to handle it.
@@ -144,7 +147,7 @@ cache_info.fetched_at reflects the last raw Intacct API pull, NOT the last dashb
 Translation: a "stale-looking" fetched_at — even weeks old — is EXPECTED. Closed-period data is still right. If a user asks "is this fresh?" or "why does it say it was fetched [date]?", explain this calmly. Don't alarm them. Don't recommend cache_refresh_start as a fix — under SKIP_POST_CLOSE_REFRESH=1 it won't move fetched_at either.`;
 
 const server = new McpServer(
-  { name: "toolkit-mcp", version: "0.4.0" },
+  { name: "toolkit-mcp", version: "0.5.0" },
   { instructions: SERVER_INSTRUCTIONS }
 );
 
@@ -282,6 +285,15 @@ server.tool(
     min_samples: z.number().optional().describe("Minimum paid invoices per customer to include (default 3)"),
   },
   async ({ lookback_months, min_samples }) => apiRequest("GET", "/api/cashflow/customer-dso", { lookback_months, min_samples })
+);
+
+server.tool(
+  "ar_retainage",
+  "Open retainage outstanding by project and customer (GC). Mirrors the 'Retainage Release Schedule' tab in Serve Electric Cash Flow Forecast 2026.xlsx. Pulls all open ARINVOICE records, filters for ones with retainage held back (and not yet released), groups by project + customer (often the GC). Returns: total_retainage_outstanding, project rollup with customer names + invoice count + total per project, customer rollup, plus top 200 invoices by retainage_open. Default as_of=today. Use for cash-flow forecasting since retainage has different release timing than regular AR (tied to project completion, not invoice age). ~45–90s — pulls full AR ledger then filters. When the user asks 'what's our open AR' or 'AR aging', consider whether they want retainage included or shown separately — for cash-flow purposes they usually want it separate.",
+  {
+    as_of: z.string().optional().describe("YYYY-MM-DD (defaults to today)"),
+  },
+  async ({ as_of }) => apiRequest("GET", "/api/intacct/ar/retainage", { as_of })
 );
 
 server.tool(
