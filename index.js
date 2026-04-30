@@ -319,6 +319,54 @@ server.tool(
   )
 );
 
+// === v0.6.0 — v1.4 Job Costing endpoints ===
+
+server.tool(
+  "project_list",
+  "List active projects with default Fixed Fee + budgeted revenue >= $50K + Active filter (the controller's WIP focus). Cached 1h server-side. Reconciles to Dave's 'All WIP Jobs' BI export — 81 jobs / ~$40M total contract value. Filters: branch (LOCATIONID '200'-'800'), billing_type ('Fixed Fee' default; 'T&M', 'Cost plus', or empty for all), min_budget (default 50000), status (default 'Active'; 'all' for closed too), parents_only (default true — children rolled up; false to see each child as its own row), pm (substring match on PM name), include_closed (default false). Returns project header data: project_id, name, billing_type, branch, customer, PM, BM, contract_value, budgeted_cost, budgeted/actual hours, child_count, sf_workorder_id, schedule dates. ~35s cold call, sub-second cached. Use this as the first call when the user asks for the active job book or wants to drill into a specific job.",
+  {
+    branch: z.string().optional().describe("LOCATIONID exact match: '200' Sterling Heights, '300' Plymouth, '400' Grand Rapids, '500' Automation, '600' Travel, '700' TPS, '800' Tampa"),
+    billing_type: z.string().optional().describe("Default 'Fixed Fee'. Other values: 'T&M', 'Cost plus', etc. Pass empty string or 'all' for every type."),
+    min_budget: z.number().optional().describe("Minimum BUDGETAMOUNT (contract revenue). Default 50000."),
+    status: z.string().optional().describe("Default 'Active'. Pass 'all' to include closed/inactive."),
+    parents_only: z.boolean().optional().describe("Default true (root jobs only — children rolled up). False shows each child WO as its own row."),
+    pm: z.string().optional().describe("Substring match on MANAGERCONTACTNAME. e.g., 'Bussott'."),
+    include_closed: z.boolean().optional().describe("Default false. True bypasses status filter."),
+  },
+  async ({ branch, billing_type, min_budget, status, parents_only, pm, include_closed }) => apiRequest(
+    "GET", "/api/intacct/projects",
+    { branch, billing_type, min_budget, status, parents_only, pm, include_closed }
+  )
+);
+
+server.tool(
+  "project_summary",
+  "Header view for ONE project: full record + parent+descendants rollup (via ROOTPARENTID, the multi-generation parent join in Intacct) + billed-to-date from GL credits to revenue accounts (41000+41009) + retainage. Reconciles penny-perfect to SF Overall_Billed_Amount on parent. Sub-second after first project_list call (uses same cache). Note: actual_cost and project margin are NOT in this response — call project_pnl for the GL-derived job-margin matrix. Use this for the project drill-down landing page (header card before showing the P&L).",
+  {
+    project_id: z.string().describe("Intacct PROJECTID, e.g., 'W010232'. Use the W-prefixed format from project_list output."),
+  },
+  async ({ project_id }) => apiRequest("GET", `/api/intacct/projects/${encodeURIComponent(project_id)}/summary`, {})
+);
+
+server.tool(
+  "project_pnl",
+  "Parent + children Job Margin matrix for ONE project — mirrors Intacct's 'Job Margin Report' layout. Rows: Job Revenue (41000 Revenue, 49000 Allocation In, 49005 Allocation Out, Total) → Cost of Sales (Material/Labor/Sub/Travel/Equipment/Compliance/Tooling/Total) → Total Job Margin → Job Margin %. Columns: parent | each child | 'All' (parent + descendants total). Includes inter-branch allocations — this is the GAAP/branch-attribution view, NOT the SF Overall_Project_Margin (which excludes allocations). Reconciles within 0.5% to Dave's saved Job Margin Report xlsx for W010232 (Job Margin % = -17.95% vs xlsx -18%). Performance: 45-70s for jobs with 50+ children, ~30s for smaller. ~13K GL rows pulled per call.",
+  {
+    project_id: z.string().describe("Intacct PROJECTID (e.g., 'W010232'). Loops over parent + all descendants."),
+  },
+  async ({ project_id }) => apiRequest("GET", `/api/intacct/projects/${encodeURIComponent(project_id)}/pnl`, {})
+);
+
+server.tool(
+  "project_budget_changes",
+  "Month-over-month budget delta detection — catches CO additions, estimating revisions, and scope creep that change BUDGETAMOUNT (contract), BUDGETEDCOST, or BUDGETQTY (hours) on existing projects. Compares current PROJECT cache to a snapshot from `since` date or closest prior. Snapshots auto-save daily on first cache refresh. Returns new_projects (created since snapshot), deleted_projects (gone since snapshot), changed_projects (sorted by largest absolute delta). Each change shows {prior, current, delta, delta_pct}. Default since=30 days ago. Use weekly to surface jobs where budgets shifted between months — particularly important for Fixed Fee jobs where unauthorized scope creep destroys margin.",
+  {
+    since: z.string().optional().describe("YYYY-MM-DD — compares to snapshot from this date or closest prior. Default 30 days ago."),
+    min_change: z.number().optional().describe("Ignore changes smaller than this absolute dollar / hour delta. Default 0.01 (any change)."),
+  },
+  async ({ since, min_change }) => apiRequest("GET", "/api/intacct/projects/budget-changes", { since, min_change })
+);
+
 const transport = new StdioServerTransport();
 await server.connect(transport);
 console.error(`toolkit-mcp connected — base URL: ${BASE_URL}`);
