@@ -358,6 +358,26 @@ server.tool(
 );
 
 server.tool(
+  "project_labor",
+  "Per-employee + per-week labor breakdown for ONE project (parent + descendants). Pulls TIMESHEETENTRY filtered by PROJECTID OR-list. Returns totals (hours, cost, billable/non-billable, avg rate, employee count, week count) plus by_employee (sorted by cost desc, with avg rate per person) and by_week (sorted by date, with employee count). Cost is UNBURDENED (raw payroll) — burdened cost is in project_pnl 'Labor Costs' row. Use for crew-size trends, identifying who's working on a job, week-over-week labor burn rate. ~50s for big jobs (~7K timesheet entries).",
+  {
+    project_id: z.string().describe("Intacct PROJECTID, e.g., 'W010232'."),
+    start: z.string().optional().describe("YYYY-MM-DD, optional. Filter to ENTRYDATE >= start."),
+    end: z.string().optional().describe("YYYY-MM-DD, optional. Filter to ENTRYDATE <= end."),
+  },
+  async ({ project_id, start, end }) => apiRequest("GET", `/api/intacct/projects/${encodeURIComponent(project_id)}/labor`, { start, end })
+);
+
+server.tool(
+  "project_vendors",
+  "Top suppliers on ONE project — GLDETAIL on direct-cost accounts grouped by vendor (matches project_pnl Cost of Sales basis). Returns each vendor with total_spend, by_category breakdown (Material/Labor/Sub/Travel/Equipment/Compliance/Tooling), transaction_count, last_transaction_date. Sorted by total_spend desc. Reconciles to project_pnl Cost of Sales total (excluding labor since labor mostly posts under employees, not vendors). Use for top-suppliers analysis, vendor concentration risk, identifying who's burning the cost budget. Open PO commitment (ordered − received) NOT included — POORDER access not yet granted to dsmith2; once granted, a project_po endpoint will layer that view. ~60s.",
+  {
+    project_id: z.string().describe("Intacct PROJECTID, e.g., 'W010232'."),
+  },
+  async ({ project_id }) => apiRequest("GET", `/api/intacct/projects/${encodeURIComponent(project_id)}/vendors`, {})
+);
+
+server.tool(
   "project_budget_changes",
   "Month-over-month budget delta detection — catches CO additions, estimating revisions, and scope creep that change BUDGETAMOUNT (contract), BUDGETEDCOST, or BUDGETQTY (hours) on existing projects. Compares current PROJECT cache to a snapshot from `since` date or closest prior. Snapshots auto-save daily on first cache refresh. Returns new_projects (created since snapshot), deleted_projects (gone since snapshot), changed_projects (sorted by largest absolute delta). Each change shows {prior, current, delta, delta_pct}. Default since=30 days ago. Use weekly to surface jobs where budgets shifted between months — particularly important for Fixed Fee jobs where unauthorized scope creep destroys margin.",
   {
