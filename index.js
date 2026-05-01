@@ -120,6 +120,9 @@ CASHFLOW ANALYTICS (computed historical metrics — slower, but mirror Dave's ex
 GL DRILL-DOWN (transaction-level):
   - gl_detail → transaction-level GLDETAIL rows for specified accounts in a date range. REQUIRED: accounts (list of account numbers), start, end (YYYY-MM-DD). OPTIONAL: type=both|debits|credits, vendor/customer/project/location for sub-drill. Caps at 50K records — narrow query if response shows truncated=true. Use for credit-card payment tracking, special-account analysis, ad-hoc GL drill-down. ~30–90s depending on result size.
 
+GL BALANCES (month-end snapshots — cache-backed, sub-second):
+  - gl_balance → OPENBAL / TOTDEBIT / TOTCREDIT / ENDBAL per (account, period) from the daily-refreshed GLACCOUNTBALANCE cache. Sub-second filter, no live API hit. Sums across locations by default; pass location= to drill into a single branch. ACCRUAL book only (cache is accrual-hardcoded). 13 trailing-month periods always available. Use for cash account balances (10010/10011/10015), LOC balance (23030), AR balance (12010), AP balance (20010), or ANY month-end account-balance question. Reconciles penny-perfect to the trial balance for closed periods. Prefer this over gl_detail when the user wants a balance, not transactions.
+
 AR RETAINAGE (separate dimension from regular AR aging):
   - ar_retainage → open retainage outstanding by project and customer (GC). Mirrors the "Retainage Release Schedule" tab in Serve Electric Cash Flow Forecast 2026.xlsx. Use this for cash-flow forecasting because retainage has different release timing than regular AR (tied to project completion / GC release schedule, not invoice age). When asked about "open AR" or "AR aging", consider whether the user wants retainage included or shown separately — for cash-flow purposes they usually want it separate. ~45–90s.
 
@@ -147,7 +150,7 @@ cache_info.fetched_at reflects the last raw Intacct API pull, NOT the last dashb
 Translation: a "stale-looking" fetched_at — even weeks old — is EXPECTED. Closed-period data is still right. If a user asks "is this fresh?" or "why does it say it was fetched [date]?", explain this calmly. Don't alarm them. Don't recommend cache_refresh_start as a fix — under SKIP_POST_CLOSE_REFRESH=1 it won't move fetched_at either.`;
 
 const server = new McpServer(
-  { name: "toolkit-mcp", version: "0.5.0" },
+  { name: "toolkit-mcp", version: "0.7.0" },
   { instructions: SERVER_INSTRUCTIONS }
 );
 
@@ -294,6 +297,27 @@ server.tool(
     as_of: z.string().optional().describe("YYYY-MM-DD (defaults to today)"),
   },
   async ({ as_of }) => apiRequest("GET", "/api/intacct/ar/retainage", { as_of })
+);
+
+server.tool(
+  "gl_balance",
+  "CACHED month-end GL account balances — sub-second filter over the daily-refreshed GLACCOUNTBALANCE cache. Returns OPENBAL, TOTDEBIT, TOTCREDIT, ENDBAL per (account, period). REQUIRED: accounts (list of account numbers like ['10010','10011','10015']). OPTIONAL: periods (list of Intacct period names like ['Month Ended February 2026']; if omitted, returns all 13 cached trailing-month periods), location (LOCATIONID; if omitted, sums across all locations), book (ACCRUAL only — cache is accrual-hardcoded). The response also includes available_periods and fetched_at so you can see cache freshness. Use for cash balance reconciliation (e.g., 10010 Checking), LOC balance (23030), AR balance for borrowing-base (12010), AP balance (20010), or ANY 'what's the balance of GL X at month-end Y' question. Reconciles penny-perfect to the trial balance for closed periods. Prefer this over gl_detail when the user wants a single balance number rather than transaction rows. ~1s.",
+  {
+    accounts: z.array(z.string()).describe("List of account numbers to query (e.g., ['10010','10011','10015']). Always pass as an array even for a single account."),
+    periods: z.array(z.string()).optional().describe("List of Intacct period names — exact format 'Month Ended <Month> <Year>' (e.g., ['Month Ended February 2026']). Omit to return all 13 cached periods."),
+    location: z.string().optional().describe("LOCATIONID exact match (e.g., '200' Sterling Heights). Omit to sum across all locations."),
+    book: z.string().optional().describe("Book ID. Only 'ACCRUAL' supported (cache is accrual-only). Default 'ACCRUAL'."),
+  },
+  async ({ accounts, periods, location, book }) => apiRequest(
+    "GET",
+    "/api/intacct/gl/balance",
+    {
+      accounts: Array.isArray(accounts) ? accounts.join(",") : accounts,
+      periods: Array.isArray(periods) ? periods.join(",") : periods,
+      location,
+      book,
+    },
+  )
 );
 
 server.tool(

@@ -93,13 +93,28 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const expected = [
       "ap_aging",
       "ap_open",
+      "ap_payments",
+      "ar_aging",
+      "ar_open",
+      "ar_payments",
+      "ar_retainage",
       "cache_info",
       "cache_raw",
       "cache_refresh_start",
       "cache_refresh_status",
+      "customer_dso",
       "dashboard_get",
+      "gl_balance",
+      "gl_detail",
+      "project_budget_changes",
+      "project_labor",
+      "project_list",
+      "project_pnl",
+      "project_summary",
+      "project_vendors",
       "toolkit_status",
       "toolkit_version",
+      "vendor_dtp",
     ];
     console.log("OK: tools/list returned", names.length, "tools:", names.join(", "));
     const missing = expected.filter((n) => !names.includes(n));
