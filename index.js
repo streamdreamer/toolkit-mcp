@@ -147,10 +147,27 @@ UX NOTE — cache_info "stale" appearance
 ==================================================================
 cache_info.fetched_at reflects the last raw Intacct API pull, NOT the last dashboard recompute. Production currently runs with SKIP_POST_CLOSE_REFRESH=1 (a workaround for NAS DNS flakiness on Intacct's CDN). Under that flag, fetched_at advances ONLY when a brand-new closed period is added (e.g., when April closes in early May), not on every nightly run. The dashboard JSON itself is recomputed nightly from the existing raw cache, so closed-period numbers stay correct.
 
-Translation: a "stale-looking" fetched_at — even weeks old — is EXPECTED. Closed-period data is still right. If a user asks "is this fresh?" or "why does it say it was fetched [date]?", explain this calmly. Don't alarm them. Don't recommend cache_refresh_start as a fix — under SKIP_POST_CLOSE_REFRESH=1 it won't move fetched_at either.`;
+Translation: a "stale-looking" fetched_at — even weeks old — is EXPECTED. Closed-period data is still right. If a user asks "is this fresh?" or "why does it say it was fetched [date]?", explain this calmly. Don't alarm them. Don't recommend cache_refresh_start as a fix — under SKIP_POST_CLOSE_REFRESH=1 it won't move fetched_at either.
+
+==================================================================
+SALESFORCE INTEGRATION — sf_* tools (added v0.8.0)
+==================================================================
+toolkit-api now exposes SF WorkOrder data via /api/sf/* routes. Bridge tools:
+  - sf_status            → auth health check (no data)
+  - sf_project           → full WorkOrder by Intacct_ID__c (e.g., 'W010232'), ~80 fields incl. budgets, hours, parent/child rollups, scheduling, scoring
+  - sf_project_po        → PO commitment subset (V2 / Spent / Remaining) — SF-aggregated, faster than Intacct POORDER drill-down
+  - sf_project_scoring   → operational scores (PR / Safety / Quality / Time / BM) + counts (DSR, work day, manpower, duration)
+  - sf_active_projects   → list active portfolio with optional branch / billing_type / min_budget filters
+
+ROUTING TIPS:
+  - Cost actuals → ALWAYS Intacct (project_pnl, project_labor, project_vendors). SF mirrors Intacct via integration; never trust SF for accounting.
+  - Budgets / scoring / scheduling / PO commitment → SF (sf_project, sf_project_po, sf_project_scoring). SF is canonical here.
+  - Parent+child rollup metrics → use SF's pre-computed Overall_* fields (e.g., Overall_Project_Margin__c, Overall_Percent_Complete__c) — much faster than aggregating children manually.
+  - Join key between systems: SF Intacct_ID__c = Intacct PROJECT.PROJECTID (the W-prefixed IDs like 'W010232').
+  - For Operations users (Tim Perry — Sterling/Automation): sf_project + sf_project_po + sf_project_scoring are the daily-driver tools.`;
 
 const server = new McpServer(
-  { name: "toolkit-mcp", version: "0.7.0" },
+  { name: "serve-toolkit-mcp", version: "0.8.0" },
   { instructions: SERVER_INSTRUCTIONS }
 );
 
@@ -411,6 +428,57 @@ server.tool(
   async ({ since, min_change }) => apiRequest("GET", "/api/intacct/projects/budget-changes", { since, min_change })
 );
 
+// --- Salesforce tools (v0.8.0) ---
+
+server.tool(
+  "sf_status",
+  "Salesforce auth health check — verifies toolkit-api can authenticate to Serve's Salesforce via client_credentials flow. No data pulled, just a connectivity test. Returns {ok: true, instance_url, auth_method, token_cached} on success. Useful first call when SF data feels stale or other sf_* tools error.",
+  {},
+  async () => apiRequest("GET", "/api/sf/status")
+);
+
+server.tool(
+  "sf_project",
+  "Salesforce WorkOrder full record by Intacct_ID__c (the W-prefixed ID like 'W010232'). Returns ~80 fields covering: budgets (Budgeted_Amount, Overall_BBB_Amount), billed status (Billed_Amount, Amount_left_to_Bill), hours (Budgeted_Hours, Actual_Hours, Hours_Used_Percentage), costs by category (material/labor/rental/travel/sub/tooling — both budgeted and actual), parent+child rollups (Overall_*, Children_*), scheduling (start/end dates, months_left), PO commitment (PO_Amount_V2/Spent/Remaining), scoring (PR/Safety/Quality/Time/BM), operational depth (manpower, DSR count, work day count), ETC (Left-to-Spend per category). The 'Overall_*' fields are SF's pre-computed parent+child+grandchild rollups — use these for change-order-aware reporting. SF is canonical for budgets, plan, status, scoring; Intacct (project_pnl) is canonical for cost actuals. Join key: Intacct_ID__c.",
+  {
+    intacct_id: z.string().describe("Intacct PROJECTID / SF Intacct_ID__c, e.g., 'W010232'."),
+  },
+  async ({ intacct_id }) => apiRequest("GET", `/api/sf/projects/${encodeURIComponent(intacct_id)}`, {})
+);
+
+server.tool(
+  "sf_project_po",
+  "Salesforce PO commitment subset for a WorkOrder. Returns PO_Amount_V2__c (committed), PO_Amount_Spent_Actual__c (paid), PO_Amount_Remaining__c (open commitment), plus Open_PO_s_Dailys__c flag. SF aggregates these on the WorkOrder header — faster than Intacct POORDER drill-down and doesn't require POORDER read permission for dsmith2. Use for cash-out forecasting (open PO commitment that will hit AP soon), checking remaining material/sub commitments on a job, or verifying PO totals match expectations.",
+  {
+    intacct_id: z.string().describe("Intacct PROJECTID, e.g., 'W010232'."),
+  },
+  async ({ intacct_id }) => apiRequest("GET", `/api/sf/projects/${encodeURIComponent(intacct_id)}/po`, {})
+);
+
+server.tool(
+  "sf_project_scoring",
+  "Salesforce operational scoring subset for a WorkOrder — PR Score, Safety Score, Quality Score, Time Score, Total Job Score, BM Score Entry + Comment. Plus operational depth metrics: Work Day Count, DSR Count (daily site reports), PR Count, Actual Manpower (avg crew), Actual Work Duration (days), Assigned Resources (distinct people). Plus completion: Hours_Saved_Percentage, Hours_Used_Percentage, Overall_Percent_Complete. Use for performance reviews, branch comparison on score-based metrics, identifying jobs at risk operationally before financial impact shows up.",
+  {
+    intacct_id: z.string().describe("Intacct PROJECTID, e.g., 'W010232'."),
+  },
+  async ({ intacct_id }) => apiRequest("GET", `/api/sf/projects/${encodeURIComponent(intacct_id)}/scoring`, {})
+);
+
+server.tool(
+  "sf_active_projects",
+  "List active Salesforce WorkOrders with optional filters. Active status set: 'Approved/Won', 'On Hold', 'Waiting', 'To Schedule', 'On-Site/Scheduled', 'Work Complete', 'PM Approval', 'BM Approval', 'Active', 'Waiting to be Invoiced' (excludes Final Status / Closed). Optional filters: branch (e.g., '200'), billing_type (e.g., 'Fixed Fee'), min_budget (e.g., 50000 to match the Fixed Fee + ≥$50K convention). Returns total_budgeted_amount + total_billed_amount across the filtered set, plus per-WO field set covering ID/branch/status/billing/budgets/billed/percent-complete/margin. Sorted by Budgeted_Amount__c desc. Default limit 500, max 2000.",
+  {
+    branch: z.string().optional().describe("Branch__c exact match (e.g., '200' for Sterling Heights, '500' for Automation)"),
+    billing_type: z.string().optional().describe("Billing_Type__c exact match (e.g., 'Fixed Fee', 'T&M')"),
+    min_budget: z.number().optional().describe("Minimum Budgeted_Amount__c (e.g., 50000 for the Fixed Fee + ≥$50K convention)"),
+    limit: z.number().optional().describe("Max records (default 500, SF max 2000)"),
+  },
+  async ({ branch, billing_type, min_budget, limit }) => apiRequest(
+    "GET", "/api/sf/projects/active",
+    { branch, billing_type, min_budget, limit },
+  )
+);
+
 const transport = new StdioServerTransport();
 await server.connect(transport);
-console.error(`toolkit-mcp connected — base URL: ${BASE_URL}`);
+console.error(`serve-toolkit-mcp connected — base URL: ${BASE_URL}`);
